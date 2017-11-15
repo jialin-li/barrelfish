@@ -4,6 +4,7 @@
 // hardcoded for ARM pmap (should get from pmap)
 #define VSPACE_BEGIN   ((lvaddr_t)1UL*1024*1024*1024) // 1G
 #define SZ_2MB 2097152u
+#define SZ_4K 4096u
 static bool is_in_pmap(genvaddr_t vaddr)
 {
     struct pmap *pmap = get_current_pmap();
@@ -12,39 +13,22 @@ static bool is_in_pmap(genvaddr_t vaddr)
     return err_is_ok(err);
 }
 
-#ifdef LARGE_PAGE_PFAULT
-static errval_t alloc_2mb(struct capref *retframe)
+static errval_t alloc_mem(struct capref *retframe, size_t size)
 {
-    printf("allocating 2MB page!\n");
+    printf("allocating page with size %lx \n", size);
     assert(retframe);
-    size_t frame_sz = SZ_2MB;
+    size_t frame_sz = size;
     errval_t err = frame_alloc(retframe, frame_sz, &frame_sz);
     if (err_is_fail(err)) {
         DEBUG_ERR(err, "frame_alloc");
         return err;
     }
-    if (frame_sz > 2097152) {
-        printf("alloc_2mb: wasting %zu bytes of memory\n", frame_sz - 2097152);
+    if (frame_sz > size) {
+        printf("alloc_mem: wasting %zu bytes of memory\n", frame_sz - size);
     }
     return SYS_ERR_OK;
 }
-#else
-static errval_t alloc_4k(struct capref *retframe)
-{
-    printf("allocating 4k page!\n");
-    assert(retframe);
-    size_t frame_sz = 4096u;
-    errval_t err = frame_alloc(retframe, frame_sz, &frame_sz);
-    if (err_is_fail(err)) {
-        DEBUG_ERR(err, "frame_alloc");
-        return err;
-    }
-    if (frame_sz > 4096) {
-        printf("alloc_4k: wasting %zu bytes of memory\n", frame_sz - 4096);
-    }
-    return SYS_ERR_OK;
-}
-#endif
+
 static errval_t handle_pagefault(void *addr)
 {
     printf("A pagefault happened \n");
@@ -56,26 +40,28 @@ static errval_t handle_pagefault(void *addr)
             printf("handle_pagefault: returning -- mapping exists already in pmap?\n");
         } else {
             printf("handle_pagefault: no mapping for address, allocating frame\n");
-            struct capref frame;
-#ifdef LARGE_PAGE_PFAULT	    
-            err = alloc_2mb(&frame);
-            if (err_is_fail(err)) {
-                DEBUG_ERR(err, "alloc_2mb");
-            }
-#else
-	    err = alloc_4k(&frame);
-            if (err_is_fail(err)) {
-                DEBUG_ERR(err, "alloc_4k");
-            }
-#endif	    
-            struct pmap *pmap = get_current_pmap();
+            
+	    struct capref frame;
+	    size_t size = SZ_4K;
+	    vregion_flags_t flags = VREGION_FLAGS_READ_WRITE;  
+	   
 #ifdef LARGE_PAGE_PFAULT
-	    err = pmap->f.map(pmap, vaddr, frame, 0, 2097152,
-                              VREGION_FLAGS_READ_WRITE | VREGION_FLAGS_LARGE, NULL, NULL);
-#else
-            err = pmap->f.map(pmap, vaddr, frame, 0, 4096,
-                              VREGION_FLAGS_READ_WRITE, NULL, NULL);
+            err = alloc_mem(&frame, SZ_2MB);
+            if (err_is_ok(err)) {
+		flags |= VREGION_FLAGS_LARGE;
+            	size = SZ_2MB;
+	    } 
 #endif
+	    if (size == SZ_4K) {
+	    	err = alloc_mem(&frame, size);
+            	if (err_is_fail(err)) {
+			DEBUG_ERR(err, "alloc 4k failed");
+			return err;
+            	}
+	    }
+            
+	    struct pmap *pmap = get_current_pmap();
+	    err = pmap->f.map(pmap, vaddr, frame, 0, size, flags, NULL, NULL);
             if (err_is_fail(err)) {
                 DEBUG_ERR(err, "pmap->f.map");
             }
